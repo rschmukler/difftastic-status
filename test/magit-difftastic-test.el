@@ -296,6 +296,48 @@ A section's keymap replaces Magit's own, so keys bound only there
                 (when (car left)  (should (<= 1 (car left) 7)))
                 (when (car right) (should (<= 1 (car right) 7)))))))))))
 
+;;;; Integration: visiting -------------------------------------------------
+
+(ert-deftest magit-difftastic-integration/visit-line-resolves-row-at-point ()
+  "Visiting resolves the worktree line of the row at point in every layout.
+On a body row the row's own new-side line wins -- visiting from the middle of
+a chunk must not jump to the chunk's first change.  On the chunk heading the
+historic first-change fallback applies."
+  (skip-unless dst-test--have-tools)
+  (skip-unless (fboundp 'difftastic--parse-single-column-chunk))
+  (dolist (display dst-test--displays)
+    (dst-test--with-repo `(("sample.txt" . ,dst-test--old))
+        `(("sample.txt" . ,dst-test--new))
+      (let ((magit-difftastic-display display))
+        (with-temp-buffer
+          (insert (dst-test--chunk-buffer-string "sample.txt" display))
+          (goto-char (point-min))
+          (let ((sec (dst-test--make-section
+                      (point-min) (line-end-position) (point-max))))
+            ;; Heading row: no body row at point -> first-change fallback.
+            (should-not (magit-difftastic--chunk-line-at-point sec))
+            (let ((lines (magit-difftastic--chunk-displayed-lines sec)))
+              (should (equal (magit-difftastic--chunk-visit-line sec)
+                             (or (car (cdr lines)) (car (car lines))))))
+            ;; A change in the middle of the chunk resolves to ITS line.
+            (goto-char (point-min))
+            (search-forward "delta-modified")
+            (should (equal 4 (magit-difftastic--chunk-visit-line sec)))
+            (if (equal display "inline")
+                ;; An old-side-only row resolves via its old-side line.
+                (progn
+                  (goto-char (point-min))
+                  (re-search-forward "^4 +delta$")
+                  (should (equal 4 (magit-difftastic--chunk-visit-line sec))))
+              ;; A context row (only displayed side-by-side) likewise.
+              (goto-char (point-min))
+              (search-forward "charlie")
+              (should (equal 3 (magit-difftastic--chunk-visit-line sec))))
+            ;; The trailing addition resolves to the last new line.
+            (goto-char (point-min))
+            (search-forward "golf-added")
+            (should (equal 7 (magit-difftastic--chunk-visit-line sec)))))))))
+
 ;;;; Integration: region (line-range) staging ------------------------------
 
 (ert-deftest magit-difftastic-integration/region-staging-resolves ()

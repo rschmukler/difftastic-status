@@ -608,9 +608,10 @@ is always re-rendered."
                  (oref file-section children))))
 
 (defun magit-difftastic-visit-file-dwim (&optional display)
-  "Visit the file enclosing point, jumping to the chunk's first change.
-When on a chunk, jump to its first new-side line (read from the chunk's rendered
-gutters); falls back to the chunk's stored gutter line.
+  "Visit the file enclosing point, jumping to the line at point.
+When on a chunk body row, jump to that row's worktree line; when on the chunk
+heading, jump to the chunk's first new-side line (both read from the chunk's
+rendered gutters); falls back to the chunk's stored gutter line.
 On a file heading (not a chunk), behaves as if point were on the file's first
 chunk.  DISPLAY, when `other-window' or `other-frame', visits the file in
 another window or frame (mirroring Magit's `*-other-window'/`*-other-frame'
@@ -751,11 +752,33 @@ is unavailable."
           (forward-line))))
     (cons (nreverse old) (nreverse new))))
 
+(defun magit-difftastic--chunk-line-at-point (section)
+  "Return the worktree line for the chunk row at point in SECTION, or nil.
+Resolves the parsed row containing point (correct for all layouts, including
+wrapped rows): prefers the row's new-side (rhs) number, then its old-side
+\(lhs) number for rows shown only on the old side, then the next row with a
+new-side number.  Nil when point is not on a body row (e.g. the chunk
+heading) or difftastic's parser is unavailable."
+  (when-let* ((rows (magit-difftastic--parse-chunk-lines section))
+              (tail (seq-drop-while
+                     (pcase-lambda (`((,_beg ,end) ,_left ,_right))
+                       (< end (point)))
+                     rows))
+              (row (car tail)))
+    (pcase-let ((`((,beg ,_end) ,left ,right) row))
+      (when (<= beg (point))
+        (or (car right)
+            (car left)
+            (cl-some (pcase-lambda (`(,_beg-end ,_left ,right))
+                       (car right))
+                     (cdr tail)))))))
+
 (defun magit-difftastic--chunk-visit-line (section)
   "Return the 1-based worktree line to visit for chunk SECTION, or nil.
-Prefers the chunk's first new-side (rhs) displayed line, so visiting lands on
-the change in the worktree; falls back to the first old-side (lhs) line for a
-pure deletion.
+Prefers the row at point (see `magit-difftastic--chunk-line-at-point'), so
+visiting lands on the row under the cursor.  When point is not on a body
+row (chunk or file heading), falls back to the chunk's first new-side (rhs)
+displayed line, then to the first old-side (lhs) line for a pure deletion.
 
 Read from SECTION's rendered gutters (see
 `magit-difftastic--chunk-displayed-lines'), so it follows whatever the section
@@ -766,8 +789,9 @@ ordinals can drift from the displayed sections).
 tokens for recognized languages -- for plain text every span is `normal' -- so
 a derived column would be misleading.  Visiting lands on the line and its first
 non-whitespace character instead.)"
-  (let ((lines (magit-difftastic--chunk-displayed-lines section)))
-    (or (car (cdr lines)) (car (car lines)))))
+  (or (magit-difftastic--chunk-line-at-point section)
+      (let ((lines (magit-difftastic--chunk-displayed-lines section)))
+        (or (car (cdr lines)) (car (car lines))))))
 
 (defun magit-difftastic--chunk-patch (section)
   "Build a standalone git patch string for the chunk SECTION, or nil.
