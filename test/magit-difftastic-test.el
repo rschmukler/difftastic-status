@@ -242,6 +242,18 @@ definitions) so they fall through to the user's own bindings."
       (should calls)
       (should-not (cl-some #'cdr calls)))))
 
+;;;; Unit tests: section keymap --------------------------------------------
+
+(ert-deftest magit-difftastic-hunk-section-map/parents-magit-hunk-map ()
+  "The chunk section map inherits Magit's hunk section map.
+A section's keymap replaces Magit's own, so keys bound only there
+\(e.g. `C-j') must come through the parent."
+  (should (eq (keymap-parent magit-difftastic-hunk-section-map)
+              magit-hunk-section-map))
+  ;; `C-j' resolves through the parent to a real command.
+  (should (commandp (lookup-key magit-difftastic-hunk-section-map
+                                (kbd "C-j")))))
+
 ;;;; Unit tests: width / wrapping knob -------------------------------------
 
 (ert-deftest magit-difftastic--width/honors-custom ()

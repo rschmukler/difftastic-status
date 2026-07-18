@@ -2351,12 +2351,17 @@ next time `magit-difftastic-mode' is enabled)."
            (magit-difftastic--set-evil-keys t))))
 
 (defvar magit-difftastic-hunk-section-map
-  (make-sparse-keymap)
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map magit-hunk-section-map)
+    map)
   "Keymap installed on difftastic chunk (`magit-difftastic-hunk') sections.
 Attached via each section's `:keymap' slot (see
-`magit-difftastic--insert-chunk').  `magit-difftastic-mode' adds
-`magit-difftastic-toggle-rendering-key' here while enabled; unbound keys fall
-through to the Magit maps as usual.")
+`magit-difftastic--insert-chunk').  Parented on `magit-hunk-section-map',
+since a section's keymap replaces Magit's own: without the parent, keys bound
+only there (e.g. `C-j' -> `magit-diff-visit-worktree-file') would fall through
+to the global map.  The inherited visit/discard commands are advised while the
+mode is on (see `magit-difftastic--advices').  `magit-difftastic-mode' adds
+`magit-difftastic-toggle-rendering-key' here while enabled.")
 
 (defun magit-difftastic--set-toggle-key (enable)
   "Bind (ENABLE non-nil) or unbind the file-rendering toggle key.
