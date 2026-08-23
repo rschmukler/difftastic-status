@@ -66,13 +66,18 @@
 ;; divider and right-side line numbers aligned across the whole buffer; the
 ;; padding only widens the gap between the columns, so staging is unaffected.
 ;;
-;; Rendering can also be toggled per file: with point on a file (or chunk),
-;; `magit-difftastic-toggle-file-rendering' (bound to
+;; Rendering can also be toggled: `magit-difftastic-default-rendering' picks
+;; which renderer files start with (difftastic by default; set it to `stock' to
+;; opt files into difftastic one at a time instead), and with point on a file
+;; (or chunk), `magit-difftastic-toggle-file-rendering' (bound to
 ;; `magit-difftastic-toggle-rendering-key', \\`C-c C-d' by default) switches
-;; just that file between difftastic and stock Magit rendering, and back.  A
-;; file shown with stock Magit sections uses Magit's own per-hunk and per-line
-;; staging -- handy when you want fine-grained staging or a file difftastic
-;; renders awkwardly.  The choice is buffer-local and survives refreshes.
+;; just that file to the other renderer, and back; with a prefix argument
+;; (\\`C-u C-c C-d') it toggles the whole buffer at once.  A file shown with
+;; stock Magit sections uses Magit's own hunks -- handy when you want Magit's
+;; native hunk granularity (say, hunk splitting or word-level refinement) or
+;; for a file difftastic renders awkwardly; difftastic chunks keep their own
+;; per-chunk and region (line-range) staging either way.
+;; The toggles are buffer-local and survive refreshes.
 ;;
 ;; Evil integration is optional and installed gracefully: if `evil' is present
 ;; the staging keys are bound in the relevant magit maps; if not, nothing is
@@ -1912,12 +1917,52 @@ falls back to a `magit-format-file-default'-style string on older Magit."
                           (if orig (format "%s -> %s" orig file) file))
                   'font-lock-face 'magit-diff-file-heading))))
 
-(defvar-local magit-difftastic--stock-files nil
-  "List of repo-relative paths to render with stock Magit, not difftastic.
+(defvar-local magit-difftastic--rendering-overrides nil
+  "List of repo-relative paths whose rendering deviates from the default.
 Buffer-local to each Magit buffer.  Toggled per file by
 `magit-difftastic-toggle-file-rendering' (which see); a file in this list is
-rendered with Magit's own `file'/`hunk' sections -- so Magit's native per-hunk
-and per-line staging applies -- instead of difftastic chunks.")
+rendered with the renderer opposite to `magit-difftastic-default-rendering':
+with a difftastic default it gets Magit's own `file'/`hunk' sections -- so
+Magit's native per-hunk and per-line staging applies -- and with a stock
+default it gets difftastic chunks.")
+
+(defcustom magit-difftastic-default-rendering 'difftastic
+  "Renderer files start with in the status, diff and revision buffers.
+With `difftastic' (the default) every changed file is rendered as difftastic
+chunks; with `stock' every file keeps Magit's own `file'/`hunk' sections until
+toggled.  `magit-difftastic-toggle-file-rendering' (C-c C-d by default) toggles
+the file at point relative to this default, and with a prefix argument the
+whole buffer.  Changing the value clears those per-buffer toggles -- an
+override stored against the old default would silently mean the opposite --
+and refreshes any live Magit buffers.  Set it through Customize or `setopt'
+so that clearing applies; a plain `setq' skips it."
+  :type '(choice (const :tag "Difftastic chunks" difftastic)
+                 (const :tag "Stock Magit sections" stock))
+  :group 'magit-difftastic
+  ;; Without `:initialize', plain `custom-initialize-reset' would run the
+  ;; `:set' function at load time and needlessly refresh every Magit buffer
+  ;; just because this file was loaded.
+  :initialize #'custom-initialize-default
+  :set (lambda (sym val)
+         (set-default sym val)
+         ;; Overrides are stored relative to the default (see
+         ;; `magit-difftastic--render-with-difftastic-p'), so a default change
+         ;; would invert every existing toggle; drop them and re-render
+         ;; instead, so stale overrides never invert their meaning.
+         (when (fboundp 'magit-refresh)
+           (dolist (buf (buffer-list))
+             (with-current-buffer buf
+               (when (derived-mode-p 'magit-status-mode 'magit-diff-mode)
+                 (setq magit-difftastic--rendering-overrides nil)
+                 (magit-refresh)))))))
+
+(defun magit-difftastic--render-with-difftastic-p (file)
+  "Return non-nil when FILE should be rendered with difftastic.
+FILE follows `magit-difftastic-default-rendering' unless it carries a
+buffer-local override (`magit-difftastic--rendering-overrides'), in which case
+it uses the other renderer -- an XOR of the default and the override."
+  (xor (eq magit-difftastic-default-rendering 'difftastic)
+       (member file magit-difftastic--rendering-overrides)))
 
 (defun magit-difftastic--insert-stock-file (file context)
   "Render FILE with stock Magit `file'/`hunk' sections, not difftastic.
@@ -2016,8 +2061,10 @@ CONTEXT is a diff context plist with the entries:
 It is threaded down to every chunk section so the staging commands can rebuild
 the corresponding git hunk.
 
-A file listed in `magit-difftastic--stock-files' is rendered with stock Magit
-sections instead of difftastic chunks (toggle per file with
+Each file is rendered with `magit-difftastic-default-rendering' unless it
+carries a buffer-local override (see
+`magit-difftastic--render-with-difftastic-p'); a stock-rendered file gets
+Magit's own sections instead of difftastic chunks (toggle per file with
 `magit-difftastic-toggle-file-rendering').
 
 Initial visibility mirrors Magit: a file section starts collapsed in
@@ -2031,8 +2078,7 @@ like it expands straight to its diff in Magit."
   ;; cache (the pre-warm below) and the major-mode fontification cache (bound via
   ;; `magit-difftastic--file-ids' so the syntax layer reuses these ids).  Doing
   ;; this once folds away the old separate `--name-status' call.
-  (let* ((info (and (cl-some (lambda (f)
-                               (not (member f magit-difftastic--stock-files)))
+  (let* ((info (and (cl-some #'magit-difftastic--render-with-difftastic-p
                              files)
                     (ignore-errors
                       (magit-difftastic--raw-info (plist-get context :diff-args)))))
@@ -2072,8 +2118,11 @@ like it expands straight to its diff in Magit."
          (magit-difftastic--render-cache
           (let ((render-files
                  (cl-remove-if
-                  (lambda (f) (or (member f magit-difftastic--stock-files)
-                                  (member f rename-origins)))
+                  (lambda (f)
+                    ;; Rename origins are never difftastic-rendered (they are
+                    ;; not shown at all), whatever the default renderer is.
+                    (or (not (magit-difftastic--render-with-difftastic-p f))
+                        (member f rename-origins)))
                   files)))
             (when render-files
               (magit-difftastic--prewarm render-files context width ids))))
@@ -2086,9 +2135,11 @@ like it expands straight to its diff in Magit."
                (magit-difftastic--compute-align-col files))))
     (dolist (file files)
       (unless (member file rename-origins)
-        (if (member file magit-difftastic--stock-files)
-            (magit-difftastic--insert-stock-file file context)
-          (magit-difftastic--insert-difftastic-file file context statuses))))))
+        ;; The XOR of the default renderer and this buffer's per-file override
+        ;; decides each file (see `magit-difftastic--render-with-difftastic-p').
+        (if (magit-difftastic--render-with-difftastic-p file)
+            (magit-difftastic--insert-difftastic-file file context statuses)
+          (magit-difftastic--insert-stock-file file context))))))
 
 (defun magit-difftastic--context-unstaged ()
   "Diff context plist for the worktree-vs-index (unstaged) diff."
@@ -2127,26 +2178,58 @@ like it expands straight to its diff in Magit."
          files (magit-difftastic--context-staged)))
       (insert "\n"))))
 
-(defun magit-difftastic-toggle-file-rendering ()
+(defun magit-difftastic--buffer-files ()
+  "Return the repo-relative paths of all `file' sections in the current buffer.
+Walks `magit-root-section' collecting each `file' section's value: both the
+difftastic file sections and the stock `magit-file-section's a toggled-to-stock
+file produces store the path there.  Duplicates (a file changed in both the
+unstaged and the staged group) are dropped."
+  (let (files)
+    (when magit-root-section
+      (magit-map-sections (lambda (section)
+                            (when (eq (oref section type) 'file)
+                              (push (oref section value) files)))))
+    (delete-dups (nreverse files))))
+
+(defun magit-difftastic-toggle-file-rendering (&optional whole-buffer)
   "Toggle the file at point between difftastic and stock Magit rendering.
 Works on a difftastic file heading or chunk, and on a stock Magit file/hunk
-section (to switch back).  A toggled-to-stock file is rendered with Magit's own
-`file'/`hunk' sections, so Magit's native per-hunk and per-line staging applies
-to it; toggling back restores the difftastic chunks.  The choice is buffer-local
-\(see `magit-difftastic--stock-files') and survives refreshes."
-  (interactive)
-  (if-let* ((file (magit-difftastic--enclosing-file)))
-      (progn
-        (setq magit-difftastic--stock-files
-              (if (member file magit-difftastic--stock-files)
-                  (remove file magit-difftastic--stock-files)
-                (cons file magit-difftastic--stock-files)))
+section (to switch back).  Files start out with
+`magit-difftastic-default-rendering'; toggling records a buffer-local override
+\(see `magit-difftastic--rendering-overrides'), so the choice survives
+refreshes.  A stock-rendered file uses Magit's own `file'/`hunk' sections, so
+Magit's native per-hunk and per-line staging applies to it; toggling back
+restores the difftastic chunks.
+
+With a prefix argument WHOLE-BUFFER, toggle every file at once: when any
+override is active, clear them all (every file back to the default renderer);
+otherwise toggle every changed file in the buffer to the non-default one."
+  (interactive "P")
+  (if whole-buffer
+      (if magit-difftastic--rendering-overrides
+          (progn
+            (setq magit-difftastic--rendering-overrides nil)
+            (magit-refresh)
+            (message "All files back to default (%s) rendering"
+                     magit-difftastic-default-rendering))
+        (setq magit-difftastic--rendering-overrides
+              (magit-difftastic--buffer-files))
         (magit-refresh)
-        (message "%s now rendered with %s"
-                 file
-                 (if (member file magit-difftastic--stock-files)
+        (message "All files toggled to %s rendering"
+                 (if (eq magit-difftastic-default-rendering 'difftastic)
                      "stock Magit" "difftastic")))
-    (user-error "Point is not on a file in a magit-difftastic section")))
+    (if-let* ((file (magit-difftastic--enclosing-file)))
+        (progn
+          (setq magit-difftastic--rendering-overrides
+                (if (member file magit-difftastic--rendering-overrides)
+                    (remove file magit-difftastic--rendering-overrides)
+                  (cons file magit-difftastic--rendering-overrides)))
+          (magit-refresh)
+          (message "%s now rendered with %s"
+                   file
+                   (if (magit-difftastic--render-with-difftastic-p file)
+                       "difftastic" "stock Magit")))
+      (user-error "Point is not on a file in a magit-difftastic section"))))
 
 ;;; Diff- and revision-buffer rendering
 ;;
@@ -2346,7 +2429,12 @@ Magit's stock inserter."
   "Around-advice for `magit-insert-diff' rendering chunks with difftastic.
 Falls back to ORIG (called with ARGS) when difftastic should not handle the
 current `magit-diff-mode' buffer."
+  ;; With a stock default and no per-file toggles, ORIG renders the whole
+  ;; buffer, so an untouched diff buffer is byte-identical to stock Magit --
+  ;; including the diffstat header our per-file machinery omits.
   (let ((ctx (and magit-difftastic-diff-buffers
+                  (not (and (eq magit-difftastic-default-rendering 'stock)
+                            (null magit-difftastic--rendering-overrides)))
                   (ignore-errors (magit-difftastic--diff-context)))))
     (if ctx
         (magit-difftastic--insert-file-sections (cdr ctx) (car ctx))
@@ -2357,7 +2445,11 @@ current `magit-diff-mode' buffer."
 Falls back to ORIG (called with ARGS) when difftastic should not handle the
 current `magit-revision-mode' buffer.  Like Magit's own inserter, the per-file
 sections are inserted directly (no extra wrapping section)."
+  ;; As in `magit-difftastic--insert-diff-advice': with a stock default and no
+  ;; per-file toggles, ORIG renders the buffer byte-identically to stock Magit.
   (let ((ctx (and magit-difftastic-revision-buffers
+                  (not (and (eq magit-difftastic-default-rendering 'stock)
+                            (null magit-difftastic--rendering-overrides)))
                   (ignore-errors (magit-difftastic--revision-context)))))
     (if ctx
         (magit-difftastic--insert-file-sections (cdr ctx) (car ctx))
@@ -2491,10 +2583,13 @@ diffs).  Evil normal/visual-state keys are also bound so per-chunk and region
 \(line-range) staging work; set `magit-difftastic-bind-evil-keys' to nil to opt
 out if you remap those keys yourself.
 
-`magit-difftastic-toggle-rendering-key' is bound on the difftastic and stock
-sections to `magit-difftastic-toggle-file-rendering', which switches the file
-at point between difftastic and stock Magit rendering (a stock-rendered file
-uses Magit's native per-hunk/line staging)."
+Files start with the renderer named by `magit-difftastic-default-rendering'
+\(difftastic unless customized).  `magit-difftastic-toggle-rendering-key' is
+bound on the difftastic and stock sections to
+`magit-difftastic-toggle-file-rendering', which switches the file at point
+between difftastic and stock Magit rendering (a stock-rendered file uses
+Magit's native per-hunk/line staging); with a prefix argument it toggles the
+whole buffer."
   :global t
   :group 'magit-difftastic
   (if magit-difftastic-mode

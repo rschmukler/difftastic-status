@@ -265,6 +265,148 @@ definitions) so they fall through to the user's own bindings."
       (should calls)
       (should-not (cl-some #'cdr calls)))))
 
+;;;; Unit tests: default rendering + overrides (issue #16) ------------------
+
+(ert-deftest magit-difftastic--render-with-difftastic-p/xor-truth-table ()
+  "The predicate XORs the default renderer with the per-file override.
+Guards GH #16: a file follows `magit-difftastic-default-rendering' unless it is
+listed in `magit-difftastic--rendering-overrides', which flips it to the other
+renderer -- under either default."
+  (with-temp-buffer
+    ;; Default difftastic: plain files render with difftastic ...
+    (let ((magit-difftastic-default-rendering 'difftastic)
+          (magit-difftastic--rendering-overrides nil))
+      (should (magit-difftastic--render-with-difftastic-p "a.txt")))
+    ;; ... and an override flips just the listed file to stock.
+    (let ((magit-difftastic-default-rendering 'difftastic)
+          (magit-difftastic--rendering-overrides '("a.txt")))
+      (should-not (magit-difftastic--render-with-difftastic-p "a.txt"))
+      (should (magit-difftastic--render-with-difftastic-p "b.txt")))
+    ;; Default stock: plain files render with stock Magit ...
+    (let ((magit-difftastic-default-rendering 'stock)
+          (magit-difftastic--rendering-overrides nil))
+      (should-not (magit-difftastic--render-with-difftastic-p "a.txt")))
+    ;; ... and an override flips just the listed file to difftastic.
+    (let ((magit-difftastic-default-rendering 'stock)
+          (magit-difftastic--rendering-overrides '("a.txt")))
+      (should (magit-difftastic--render-with-difftastic-p "a.txt"))
+      (should-not (magit-difftastic--render-with-difftastic-p "b.txt")))))
+
+(ert-deftest magit-difftastic--insert-file-sections/stock-default-no-renders ()
+  "With a `stock' default every file dispatches to the stock inserter.
+No difftastic pre-warm (and hence no difft process) may be spawned for a group
+whose files all render stock -- the raw-info/pre-warm machinery is gated on at
+least one difftastic-rendered file."
+  (with-temp-buffer
+    (let ((magit-difftastic-default-rendering 'stock)
+          (magit-difftastic--rendering-overrides nil)
+          (magit-difftastic-align-columns nil)
+          stock difft prewarmed)
+      (cl-letf (((symbol-function 'magit-difftastic--insert-stock-file)
+                 (lambda (file _context) (push file stock)))
+                ((symbol-function 'magit-difftastic--insert-difftastic-file)
+                 (lambda (file _context _statuses) (push file difft)))
+                ((symbol-function 'magit-difftastic--prewarm)
+                 (lambda (&rest _)
+                   (setq prewarmed t)
+                   (make-hash-table :test 'equal))))
+        (magit-difftastic--insert-file-sections
+         '("a.txt" "b.txt") (magit-difftastic--context-unstaged)))
+      (should (equal (nreverse stock) '("a.txt" "b.txt")))
+      (should-not difft)
+      (should-not prewarmed))))
+
+(ert-deftest magit-difftastic-toggle-file-rendering/override-roundtrip ()
+  "Toggling records a buffer-local override; toggling again removes it.
+The override is what the predicate consults on every (refresh-like) re-render,
+so recording it is what makes the choice survive refreshes."
+  (with-temp-buffer
+    (let ((magit-difftastic-default-rendering 'difftastic)
+          (magit-difftastic--rendering-overrides nil)
+          (refreshes 0))
+      (cl-letf (((symbol-function 'magit-difftastic--enclosing-file)
+                 (lambda () "a.txt"))
+                ((symbol-function 'magit-refresh)
+                 (lambda () (cl-incf refreshes))))
+        (magit-difftastic-toggle-file-rendering)
+        (should (equal magit-difftastic--rendering-overrides '("a.txt")))
+        (should-not (magit-difftastic--render-with-difftastic-p "a.txt"))
+        (should (= refreshes 1))
+        ;; A second toggle removes the override, back to the default.
+        (magit-difftastic-toggle-file-rendering)
+        (should-not magit-difftastic--rendering-overrides)
+        (should (magit-difftastic--render-with-difftastic-p "a.txt"))
+        (should (= refreshes 2))))))
+
+(ert-deftest magit-difftastic-toggle-file-rendering/whole-buffer-prefix ()
+  "With a prefix argument the whole buffer toggles via `--buffer-files'.
+No overrides -> every changed file is toggled to the non-default renderer; any
+override present -> they are all cleared (every file back to the default)."
+  (with-temp-buffer
+    (let ((magit-difftastic-default-rendering 'difftastic)
+          (magit-difftastic--rendering-overrides nil))
+      (cl-letf (((symbol-function 'magit-difftastic--buffer-files)
+                 (lambda () '("a.txt" "b.txt")))
+                ((symbol-function 'magit-refresh) #'ignore))
+        (magit-difftastic-toggle-file-rendering '(4))
+        (should (equal magit-difftastic--rendering-overrides
+                       '("a.txt" "b.txt")))
+        (should-not (magit-difftastic--render-with-difftastic-p "a.txt"))
+        (magit-difftastic-toggle-file-rendering '(4))
+        (should-not magit-difftastic--rendering-overrides)
+        (should (magit-difftastic--render-with-difftastic-p "a.txt"))))))
+
+(ert-deftest magit-difftastic--buffer-files/walks-file-sections ()
+  "`--buffer-files' collects every `file' section's path, without duplicates.
+Both the difftastic file sections and stock `magit-file-section's have type
+`file' with the repo-relative path as the section value."
+  (with-temp-buffer
+    (cl-flet ((section (type &optional value children)
+                (let ((s (magit-section)))
+                  (oset s type type)
+                  (oset s value value)
+                  (oset s children children)
+                  s)))
+      (let ((magit-root-section
+             (section 'root nil
+                      (list (section 'unstaged nil
+                                     (list (section 'file "a.txt")
+                                           (section 'file "b.txt")))
+                            ;; a.txt also staged: reported once.
+                            (section 'staged nil
+                                     (list (section 'file "a.txt")))))))
+        (should (equal (magit-difftastic--buffer-files)
+                       '("a.txt" "b.txt"))))
+      ;; No root section (an unrendered buffer) yields no files.
+      (let ((magit-root-section nil))
+        (should-not (magit-difftastic--buffer-files))))))
+
+(ert-deftest magit-difftastic--insert-diff-advice/stock-default-passthrough ()
+  "An untouched diff buffer with a `stock' default goes straight to ORIG.
+With `magit-difftastic-default-rendering' set to `stock' and no per-file
+override, the around-advice must not even classify the diff: ORIG renders the
+whole buffer, byte-identical to stock Magit (diffstat included).  One override
+is enough to route back through the difftastic machinery."
+  (with-temp-buffer
+    (let ((magit-difftastic-diff-buffers t)
+          (magit-difftastic-default-rendering 'stock)
+          (magit-difftastic--rendering-overrides nil)
+          orig-called context-calls)
+      (cl-letf (((symbol-function 'magit-difftastic--diff-context)
+                 (lambda () (push t context-calls) nil)))
+        (magit-difftastic--insert-diff-advice
+         (lambda (&rest _) (setq orig-called t)))
+        (should orig-called)
+        (should-not context-calls)
+        ;; With an override present the diff is classified again.
+        (setq orig-called nil)
+        (setq magit-difftastic--rendering-overrides '("a.txt"))
+        (magit-difftastic--insert-diff-advice
+         (lambda (&rest _) (setq orig-called t)))
+        (should context-calls)
+        ;; The stubbed context is nil, so ORIG still runs as the fallback.
+        (should orig-called)))))
+
 ;;;; Unit tests: section keymap --------------------------------------------
 
 (ert-deftest magit-difftastic-hunk-section-map/parents-magit-hunk-map ()

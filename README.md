@@ -29,9 +29,11 @@ split into collapsible per-chunk sub-sections with a native-looking
   the commit-message preview) and `magit-revision-mode`; staging stays available
   on the worktree and `--cached` diffs, with revision-only diffs shown
   display-only. Anything difftastic can't render falls back to stock Magit.
-- **Per-file toggle** — `magit-difftastic-toggle-file-rendering` (`C-c C-d`)
-  switches a single file between difftastic and stock Magit rendering (the
-  latter giving Magit's own per-line staging); buffer-local and refresh-safe.
+- **Per-file toggle** — `magit-difftastic-default-rendering` picks the renderer
+  files start with (difftastic by default, or stock Magit);
+  `magit-difftastic-toggle-file-rendering` (`C-c C-d`) switches a single file to
+  the other renderer (stock giving Magit's own per-line staging) and
+  `C-u C-c C-d` toggles the whole buffer; buffer-local and refresh-safe.
 - **Configurable display** — inline or side-by-side, optional major-mode syntax
   highlighting, optional line-number gutters.
 - **Drop-in and reversible** — `magit-difftastic-mode` is a global minor mode;
@@ -154,6 +156,7 @@ Evil is absent, this is skipped entirely — no hard dependency.
 | `magit-difftastic-apply-context`        | `1`          | Context lines for the git hunks used to stage/unstage chunks. Must be `>= 1`. |
 | `magit-difftastic-diff-buffers`         | `t`          | Render `magit-diff-mode` buffers (including the commit-message preview) with difftastic chunks. |
 | `magit-difftastic-revision-buffers`     | `t`          | Render `magit-revision-mode` buffers (viewing a commit) with difftastic chunks. |
+| `magit-difftastic-default-rendering`    | `difftastic` | Renderer files start with in the status/diff/revision buffers: `difftastic` or `stock`. `C-c C-d` toggles the file at point relative to this default; `C-u C-c C-d` toggles the whole buffer. Changing it clears the per-buffer toggles. |
 | `magit-difftastic-toggle-rendering-key` | `"C-c C-d"`  | Key bound on difftastic/stock sections to `magit-difftastic-toggle-file-rendering` (switch the file at point between difftastic and stock Magit rendering). `nil` binds no key. |
 
 ## How it works
