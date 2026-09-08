@@ -345,6 +345,63 @@ whose files all render stock."
             (should-not (string-match-p "new file +new.txt"
                                         (buffer-string)))))))))
 
+(ert-deftest magit-difftastic--status-advice/renderer-dispatch ()
+  "Status advice delegates only untouched stock-default buffers to Magit."
+  (dolist (pair '((magit-difftastic--insert-staged-advice
+                  . magit-difftastic-insert-staged-changes)
+                 (magit-difftastic--insert-unstaged-advice
+                  . magit-difftastic-insert-unstaged-changes)))
+    (dolist (default '(stock difftastic))
+      (dolist (overrides '(nil ("a.txt")))
+        (with-temp-buffer
+          (let ((magit-difftastic-default-rendering default)
+                (magit-difftastic--rendering-overrides overrides)
+                called)
+            (cl-letf (((symbol-function (cdr pair))
+                       (lambda () (setq called 'difftastic))))
+              (funcall (car pair)
+                       (lambda (&rest args) (setq called args)) 'sentinel)
+              (should (equal called
+                             (if (and (eq default 'stock) (null overrides))
+                                 '(sentinel)
+                               'difftastic))))))))))
+
+(ert-deftest magit-difftastic-integration/stock-status-passthrough ()
+  "Untouched stock status output matches Magit with the mode disabled."
+  (skip-unless dst-test--have-tools)
+  (dst-test--with-repo
+      '(("old.txt" . "alpha\nbravo\ncharlie\n")
+        ("other.txt" . "one\ntwo\n"))
+      '(("other.txt" . "ONE\ntwo\n"))
+    (dst-test--git "mv" "old.txt" "new.txt")
+    (let ((was-enabled magit-difftastic-mode)
+          (magit-difftastic-default-rendering 'stock))
+      (unwind-protect
+          (cl-labels ((render ()
+                        (with-temp-buffer
+                          (magit-status-mode)
+                          (let ((inhibit-read-only t))
+                            (magit-insert-section (root)
+                              (magit-insert-staged-changes)
+                              (magit-insert-unstaged-changes)))
+                          (list (buffer-substring-no-properties
+                                 (point-min) (point-max))
+                                (magit-difftastic--buffer-files)))))
+            (magit-difftastic-mode -1)
+            (let ((native (render)))
+              (should (equal (cadr native) '("new.txt" "other.txt")))
+              (magit-difftastic-mode 1)
+              (cl-letf (((symbol-function 'magit-difftastic--raw-info)
+                         (lambda (&rest _) (ert-fail "Unexpected raw-info")))
+                        ((symbol-function 'magit-difftastic--insert-file-sections)
+                         (lambda (&rest _) (ert-fail "Unexpected per-file rendering")))
+                        ((symbol-function 'magit-difftastic--prewarm)
+                         (lambda (&rest _) (ert-fail "Unexpected prewarm"))))
+                (should (equal (render) native)))
+              (magit-difftastic-mode -1)
+              (should (equal (render) native))))
+        (magit-difftastic-mode (if was-enabled 1 -1))))))
+
 (ert-deftest magit-difftastic-toggle-file-rendering/override-roundtrip ()
   "Toggling records a buffer-local override; toggling again removes it.
 The override is what the predicate consults on every (refresh-like) re-render,

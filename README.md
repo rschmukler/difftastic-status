@@ -34,6 +34,8 @@ split into collapsible per-chunk sub-sections with a native-looking
   `magit-difftastic-toggle-file-rendering` (`C-c C-d`) switches a single file to
   the other renderer (stock giving Magit's own per-line staging) and
   `C-u C-c C-d` toggles the whole buffer; buffer-local and refresh-safe.
+  With a stock default and no per-file overrides, status, diff, and revision
+  buffers use Magit's native inserters without running difftastic.
 - **Configurable display** — inline or side-by-side, optional major-mode syntax
   highlighting, optional line-number gutters.
 - **Drop-in and reversible** — `magit-difftastic-mode` is a global minor mode;

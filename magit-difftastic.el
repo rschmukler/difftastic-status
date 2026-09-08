@@ -2159,6 +2159,23 @@ like it expands straight to its diff in Magit."
         :old-source '(blob "HEAD") :new-source '(blob "")
         :staged t :stageable t))
 
+(defun magit-difftastic--stock-default-p ()
+  "Return non-nil when the buffer uses stock rendering without overrides."
+  (and (eq magit-difftastic-default-rendering 'stock)
+       (null magit-difftastic--rendering-overrides)))
+
+(defun magit-difftastic--insert-unstaged-advice (orig &rest args)
+  "Render unstaged changes, calling ORIG with ARGS for stock-only buffers."
+  (if (magit-difftastic--stock-default-p)
+      (apply orig args)
+    (magit-difftastic-insert-unstaged-changes)))
+
+(defun magit-difftastic--insert-staged-advice (orig &rest args)
+  "Render staged changes, calling ORIG with ARGS for stock-only buffers."
+  (if (magit-difftastic--stock-default-p)
+      (apply orig args)
+    (magit-difftastic-insert-staged-changes)))
+
 (defun magit-difftastic-insert-unstaged-changes ()
   "Difftastic replacement for `magit-insert-unstaged-changes'."
   (when-let* ((files (magit-difftastic--drop-whitespace-only
@@ -2437,8 +2454,7 @@ current `magit-diff-mode' buffer."
   ;; buffer, so an untouched diff buffer is byte-identical to stock Magit --
   ;; including the diffstat header our per-file machinery omits.
   (let ((ctx (and magit-difftastic-diff-buffers
-                  (not (and (eq magit-difftastic-default-rendering 'stock)
-                            (null magit-difftastic--rendering-overrides)))
+                  (not (magit-difftastic--stock-default-p))
                   (ignore-errors (magit-difftastic--diff-context)))))
     (if ctx
         (magit-difftastic--insert-file-sections (cdr ctx) (car ctx))
@@ -2452,8 +2468,7 @@ sections are inserted directly (no extra wrapping section)."
   ;; As in `magit-difftastic--insert-diff-advice': with a stock default and no
   ;; per-file toggles, ORIG renders the buffer byte-identically to stock Magit.
   (let ((ctx (and magit-difftastic-revision-buffers
-                  (not (and (eq magit-difftastic-default-rendering 'stock)
-                            (null magit-difftastic--rendering-overrides)))
+                  (not (magit-difftastic--stock-default-p))
                   (ignore-errors (magit-difftastic--revision-context)))))
     (if ctx
         (magit-difftastic--insert-file-sections (cdr ctx) (car ctx))
@@ -2598,10 +2613,10 @@ whole buffer."
   :group 'magit-difftastic
   (if magit-difftastic-mode
       (progn
-        (advice-add 'magit-insert-unstaged-changes :override
-                    #'magit-difftastic-insert-unstaged-changes)
-        (advice-add 'magit-insert-staged-changes :override
-                    #'magit-difftastic-insert-staged-changes)
+        (advice-add 'magit-insert-unstaged-changes :around
+                    #'magit-difftastic--insert-unstaged-advice)
+        (advice-add 'magit-insert-staged-changes :around
+                    #'magit-difftastic--insert-staged-advice)
         (advice-add 'magit-insert-diff :around
                     #'magit-difftastic--insert-diff-advice)
         (advice-add 'magit-insert-revision-diff :around
@@ -2613,9 +2628,9 @@ whole buffer."
         (magit-difftastic--set-evil-keys t)
         (magit-difftastic--set-toggle-key t))
     (advice-remove 'magit-insert-unstaged-changes
-                   #'magit-difftastic-insert-unstaged-changes)
+                   #'magit-difftastic--insert-unstaged-advice)
     (advice-remove 'magit-insert-staged-changes
-                   #'magit-difftastic-insert-staged-changes)
+                   #'magit-difftastic--insert-staged-advice)
     (advice-remove 'magit-insert-diff
                    #'magit-difftastic--insert-diff-advice)
     (advice-remove 'magit-insert-revision-diff
